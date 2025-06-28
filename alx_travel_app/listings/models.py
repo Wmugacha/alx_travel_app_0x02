@@ -69,7 +69,7 @@ class Payment(models.Model):
         ('refunded', 'Refunded'),
     ]
 
-    transaction_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    transaction_id = models.CharField(max_length=100, null=True, blank=True)
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name='payment')
     payment_status = models.CharField(max_length=15, choices=PAYMENT_CHOICES, default='pending')
     amount = models.DecimalField(max_digits=10, decimal_places=2)

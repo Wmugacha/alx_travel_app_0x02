@@ -16,7 +16,7 @@ import environ
 import os
 
 CHAPA_SECRET_KEY = os.environ.get('CHAPA_SECRET_KEY')
-CHAPA_PUBLIC_KEY = OS.environ.get('CHAPA_PUBLIC_KEY')
+CHAPA_PUBLIC_KEY = os.environ.get('CHAPA_PUBLIC_KEY')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
