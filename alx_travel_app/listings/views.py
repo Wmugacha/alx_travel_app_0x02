@@ -6,11 +6,12 @@ from .serializers import ListingSerializer, BookingSerializer, PaymentSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.http import JsonResponse
-from chapa import Chapa
+#from chapa import Chapa
 from django.conf import settings
 from django.db import transaction
 import uuid
 from rest_framework.response import Response
+from .tasks import send_payment_confirmation_email
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -21,7 +22,7 @@ class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
 
-chapa = Chapa(settings.CHAPA_SECRET_KEY)
+#chapa = Chapa(settings.CHAPA_SECRET_KEY)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class InitiatePaymentView(APIView):
@@ -70,7 +71,50 @@ class InitiatePaymentView(APIView):
                     amount=amount,
                     payment_status='pending')
 
-            return Response(chapa_response, status=status.HTTP_200_OK)
+            return Response({
+                "checkout_urls" : chapa_response['data']['checkout_url'],
+                "tx_ref" : tx_ref
+            }, status=status.HTTP_200_OK)
 
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VerifyPaymentView(APIView):
+    def get(self, request, *args, **kwargs):
+        ref_id = request.query_params.get("ref_id")
+
+        if not ref_id:
+            return Response({"error": "ref_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payment = Payment.objects.get(transaction_id=ref_id)
+            
+            chapa_response = chapa.verify(ref_id)
+            chapa_status = chapa_response["data"]["status"]
+
+            payment.payment_status = chapa_status
+            payment.save()
+
+            #Update Booking
+            if chapa_status == "success":
+                payment.booking.booking_status = "confirmed"
+                payment.booking.save()
+
+                send_payment_confirmation_email.delay(
+                    user_email=payment.booking.user.email,
+                    listing_title=payment.booking.listing.title
+                )
+
+            return Response({
+                "message": "Payment verified.",
+                "status": chapa_status,
+                "checkout_url": chapa_response["data"].get("checkout_url"),
+                "paid_at": chapa_response["data"].get("created_at"),
+                "tx_ref": chapa_response["data"].get("tx_ref")
+            }, status=status.HTTP_200_OK)
+
+        except Payment.DoesNotExist:
+            return Response({"error": "Payment with that ref_id not found."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
