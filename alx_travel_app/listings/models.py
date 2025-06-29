@@ -71,6 +71,8 @@ class Payment(models.Model):
 
     transaction_id = models.CharField(max_length=100, null=True, blank=True)
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name='payment')
+    currency = models.CharField(max_length=10, default='ETB')
+    phone_number = models.CharField(max_length=20, blank=True, null=True)
     payment_status = models.CharField(max_length=15, choices=PAYMENT_CHOICES, default='pending')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     tx_ref = models.CharField(max_length=100, unique=True)

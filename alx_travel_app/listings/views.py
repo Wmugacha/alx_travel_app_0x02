@@ -6,12 +6,15 @@ from .serializers import ListingSerializer, BookingSerializer, PaymentSerializer
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.http import JsonResponse
-#from chapa import Chapa
+from chapa import Chapa
 from django.conf import settings
 from django.db import transaction
 import uuid
 from rest_framework.response import Response
 from .tasks import send_payment_confirmation_email
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -22,12 +25,13 @@ class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
 
-#chapa = Chapa(settings.CHAPA_SECRET_KEY)
+chapa = Chapa(settings.CHAPA_SECRET_KEY)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class InitiatePaymentView(APIView):
     def post(self, request, *args, **kwargs):
-        user = request.user
+        user = User.objects.first() #For testing purposes
+        #user = request.user
         data = request.data
 
         try:
@@ -36,8 +40,9 @@ class InitiatePaymentView(APIView):
             check_out = data.get("check_out")
             guests = data.get("guests")
             amount = data.get("amount")
+            phone_number = data.get("phone_number")
 
-            if not all([listing_id, check_in, check_out, guests, amount]):
+            if not all([listing_id, check_in, check_out, guests, amount, phone_number]):
                 return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
             listing = get_object_or_404(Listing, id=listing_id)
@@ -53,22 +58,32 @@ class InitiatePaymentView(APIView):
                     booking_status='pending'
                 )        
 
+                email = "testuser@gmail.com" #For testing Only
+
                 chapa_response = chapa.initialize(
-                    email=user.email,
+                    email=email,
                     amount=amount,
+                    currency='ETB',
                     first_name=user.first_name,
                     last_name=user.last_name,
                     tx_ref=tx_ref,
                     callback_url= "http://localhost:8000/api/"
                 )
 
-                transaction_id = chapa_response['data']['id']
+                if not chapa_response or 'data' not in chapa_response:
+                    return Response({"error": "Failed to initialize payment with Chapa"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                print("Chapa response:", chapa_response)
+
+                transaction_id = chapa_response['data'].get('id', tx_ref)
 
                 Payment.objects.create(
                     booking=booking,
                     tx_ref=tx_ref,
+                    phone_number=phone_number,
                     transaction_id=transaction_id,
                     amount=amount,
+                    currency='ETB',
                     payment_status='pending')
 
             return Response({
@@ -82,15 +97,17 @@ class InitiatePaymentView(APIView):
 
 class VerifyPaymentView(APIView):
     def get(self, request, *args, **kwargs):
-        ref_id = request.query_params.get("ref_id")
+        print("===== VerifyPaymentView called =====")
 
-        if not ref_id:
+        tx_ref = request.query_params.get("tx_ref")
+
+        if not tx_ref:
             return Response({"error": "ref_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            payment = Payment.objects.get(transaction_id=ref_id)
+            payment = Payment.objects.get(tx_ref=tx_ref)
             
-            chapa_response = chapa.verify(ref_id)
+            chapa_response = chapa.verify(tx_ref)
             chapa_status = chapa_response["data"]["status"]
 
             payment.payment_status = chapa_status
@@ -98,8 +115,12 @@ class VerifyPaymentView(APIView):
 
             #Update Booking
             if chapa_status == "success":
+                print("Chapa payment was successful.")
                 payment.booking.booking_status = "confirmed"
                 payment.booking.save()
+
+                print("Verifying chapa status:", chapa_status)
+                print("Triggering Celery email task...")
 
                 send_payment_confirmation_email.delay(
                     user_email=payment.booking.user.email,
